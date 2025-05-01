@@ -889,4 +889,4 @@ en un formato de resumen conciso, como si fueras el resultado de una búsqueda e
 }
 
 // Exportar una instancia del servicio
-export const geminiService = new GeminiService(process.env.GOOGLE_GENAI_API_KEY || ''); 
+export const geminiService = new GeminiService(process.env.NEXT_PUBLIC_GOOGLE_GENAI_API_KEY || ''); 

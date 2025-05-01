@@ -41,6 +41,8 @@ import { DockerStatus } from '@/components/DockerStatus';
 import { useDocker } from '@/hooks/DockerContext';
 import { dockerService } from '@/services/docker-service';
 import { AgenticPlanningOutput } from '@/ai/flows/types';
+import { geminiService } from '@/services/gemini-service';
+import { marked } from 'marked';
 
 // Define types for file handling and plan steps
 interface UploadedFile {
@@ -55,6 +57,15 @@ interface PlanStep {
   description: string;
   status: 'pending' | 'in-progress' | 'completed' | 'error';
   icon?: React.ReactNode;
+  subSteps?: SubStep[]; // Añadimos subpasos para cada paso
+  isCollapsed?: boolean; // Añadimos propiedad para colapsar/expandir
+}
+
+interface SubStep {
+  id: number;
+  description: string;
+  status: 'pending' | 'in-progress' | 'completed' | 'error';
+  parentId: number; // ID del paso padre
 }
 
 interface ResultItem {
@@ -68,6 +79,11 @@ interface ResultItem {
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
+// Utilidad para verificar si un objeto es de tipo AgenticPlanningOutput
+const isAgenticPlan = (obj: any): obj is AgenticPlanningOutput => {
+  return obj && typeof obj === 'object' && 'pasos' in obj && 'requiereInfoExterna' in obj;
+};
+
 const FlowCodePage: NextPage = () => {
   const [prompt, setPrompt] = useState('');
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -76,6 +92,8 @@ const FlowCodePage: NextPage = () => {
   const [showPlan, setShowPlan] = useState(false);
   const [plan, setPlan] = useState<PlanVisualizationOutput | AgenticPlanningOutput | null>(null);
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
+  const [isGeneratingSubSteps, setIsGeneratingSubSteps] = useState(false); // Estado para la generación de subpasos
+  const [showSubStepsGenerated, setShowSubStepsGenerated] = useState(false); // Mostrar cuando los subpasos estén generados
   const [isExecuting, setIsExecuting] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [results, setResults] = useState<ResultItem[]>([]);
@@ -218,21 +236,23 @@ const FlowCodePage: NextPage = () => {
     setShowPlan(false);
     setPlan(null);
     setPlanSteps([]);
+    setIsGeneratingSubSteps(false);
+    setShowSubStepsGenerated(false);
     setIsExecuting(false);
     setShowResults(false);
     setResults([]);
 
     try {
-      // Preparar información detallada de los archivos para Gemini
-      const fileInfos = uploadedFiles.map(file => ({
-        name: file.name,
-        type: file.type,
-        size: formatBytes(file.size),
-      }));
-
-      // Preparar archivos para el flujo agéntico con información detallada
-      const fileNames = uploadedFiles.map(file => file.name);
-      const fileContents = uploadedFiles.map(file => {
+      // Paso 1: Mejorar el prompt usando técnicas de enhance-prompt
+      const enrichedPrompt = `${prompt}\n\nNecesito un plan extremadamente detallado. Para cada paso, proporciona una descripción completa y explicación detallada de qué hacer y por qué es importante. Incluye todos los aspectos técnicos relevantes y posibles desafíos que pueda encontrar.`;
+      
+      console.log("Preparando análisis de archivos y contexto...");
+      
+      // Preparar archivos para el flujo agéntico
+      const fileNameArray = uploadedFiles.map(file => file.name);
+      
+      // Extraer contenido de los archivos
+      const fileContentArray = uploadedFiles.map(file => {
         // Intentar extraer el contenido del dataUri
         const [, base64Content] = file.dataUri.split(',');
         let contenido = '';
@@ -247,148 +267,314 @@ const FlowCodePage: NextPage = () => {
         } else {
           contenido = `[No se pudo extraer contenido: ${file.name}]`;
         }
-
-        // Añadir metadatos al inicio del contenido
-        return `[Archivo: ${file.name}]
-Tipo: ${file.type}
-Tamaño: ${formatBytes(file.size)}
----
-${contenido}`;
+        return contenido;
       });
-
-      // Si el Docker está inicializado, subir archivos al contenedor antes de comenzar el plan
-      if (isDockerInitialized && uploadedFiles.length > 0) {
-        try {
-          // Obtener un contenedor disponible
-          const container = await dockerService.getAvailableContainer();
-          
-          // Subir archivos al contenedor
-          toast({
-            title: "Subiendo archivos",
-            description: `Subiendo ${uploadedFiles.length} archivos al contenedor Docker...`,
-          });
-          
-          // Preparar archivos para subir
-          const filesToUpload = uploadedFiles.map(file => ({
-            name: file.name,
-            dataUri: file.dataUri
-          }));
-          
-          // Subir archivos al directorio uploads
-          await dockerService.uploadFilesFromDataUris(container.id, filesToUpload);
-          
-          toast({
-            title: "Archivos subidos",
-            description: `${uploadedFiles.length} archivos subidos correctamente al contenedor.`,
-          });
-        } catch (error) {
-          console.error('Error al subir archivos al contenedor Docker:', error);
-          toast({
-            variant: 'destructive',
-            title: "Error al subir archivos",
-            description: "No se pudieron subir archivos al contenedor Docker.",
-          });
-        }
-      }
-
-      // Preparar la entrada para el flujo agéntico con información detallada
-      const input = {
-        prompt: uploadedFiles.length > 0 
-          ? `${prompt}\n\nArchivos disponibles:\n${fileInfos.map(f => `- ${f.name} (${f.type}, ${f.size})`).join('\n')}`
-          : prompt,
-        fileNames,
-        fileContents,
-      };
-
-      // Generar el plan usando el flujo agéntico
-      const agenticPlan = await generateAgenticPlan(input);
       
-      // Actualizar la interfaz con el plan generado
-      const planAdaptado: PlanVisualizationOutput = {
-        plan: agenticPlan.plan,
-        requiresExternalInfo: agenticPlan.requiereInfoExterna,
-        requiresFileAnalysis: agenticPlan.requiereAnalisisArchivos,
-        visualizationFormats: agenticPlan.detallesVisualizacion ? [agenticPlan.detallesVisualizacion] : []
-      };
-      setPlan(planAdaptado);
-
-      // Crear los pasos del plan a partir de la respuesta agéntica
-      const steps: PlanStep[] = [
-        {
-          id: 1, 
-          description: `Analizar la solicitud: "${prompt ? prompt.substring(0, 50)+'...' : 'Basado en archivos cargados'}"`, 
-          status: 'completed', 
-          icon: <Info className="h-5 w-5 text-blue-500" />
-        },
-      ];
-
-      // Añadir pasos para archivos solicitados
-      if (agenticPlan.archivosSolicitados && agenticPlan.archivosSolicitados.length > 0) {
-        steps.push({
-          id: 2, 
-          description: `Analizar archivos: ${agenticPlan.archivosSolicitados.join(', ')}`, 
-          status: 'completed', 
-          icon: <FileText className="h-5 w-5 text-purple-500" />
-        });
-      }
-
-      // Añadir pasos para búsquedas realizadas
-      if (agenticPlan.busquedasRealizadas && agenticPlan.busquedasRealizadas.length > 0) {
-        steps.push({
-          id: 3, 
-          description: `Buscar información: ${agenticPlan.busquedasRealizadas.join(', ')}`, 
-          status: 'completed', 
-          icon: <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-500"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        });
-      }
-
-      // Añadir paso para la generación del plan
-      steps.push({
-        id: 4, 
-        description: 'Generar plan detallado', 
-        status: 'completed', 
-        icon: <Wand2 className="h-5 w-5 text-green-500" />
+      // Paso 2: Verificar si se necesita información externa (como en incorporate-external-info)
+      console.log("Verificando si se necesita información externa...");
+      
+      // Paso 3: Generar el plan con todas las mejoras
+      console.log("Generando plan con Gemini...");
+      const newPlan = await generateAgenticPlan({
+        prompt: enrichedPrompt,
+        fileNames: fileNameArray,
+        fileContents: fileContentArray
       });
-
-      // Paso para la visualización si hay detalles
-      if (agenticPlan.detallesVisualizacion) {
-        steps.push({
-          id: 5, 
-          description: `Preparar visualización: ${agenticPlan.detallesVisualizacion.substring(0, 50)}...`, 
-          status: 'completed', 
-          icon: <Presentation className="h-5 w-5 text-indigo-500" />
+      
+      console.log("Plan generado:", newPlan);
+      setPlan(newPlan);
+      
+      // Asegurarse de que newPlan.pasos sea siempre un array
+      if (newPlan && newPlan.pasos && Array.isArray(newPlan.pasos)) {
+        const newPlanSteps: PlanStep[] = newPlan.pasos.map((paso, index) => ({
+          id: index + 1,
+          description: paso.paso,
+          status: 'pending',
+          icon: <Info size={16} />,
+          subSteps: [],
+          isCollapsed: true
+        }));
+        
+        setPlanSteps(newPlanSteps);
+      } else {
+        // Si pasos no es un array, crear un paso genérico
+        console.error("Error: newPlan.pasos no es un array", newPlan);
+        // Crear un paso por defecto si no hay pasos
+        const defaultStep: PlanStep = {
+          id: 1,
+          description: "Realizar la tarea solicitada",
+          status: 'pending',
+          icon: <Info size={16} />,
+          subSteps: [],
+          isCollapsed: true
+        };
+        setPlanSteps([defaultStep]);
+        
+        // Notificar al usuario
+        toast({
+          variant: 'destructive',
+          title: 'Error al procesar el plan',
+          description: 'No se pudieron generar los pasos correctamente. Se ha creado un plan genérico.',
         });
       }
-
-      setPlanSteps(steps);
+      
+      // Almacenar el resultado para mostrarlo
+      const resultItem: ResultItem = {
+        type: 'plan',
+        title: 'Plan Generado con Gemini',
+        plan: newPlan
+      };
+      
+      setResults([resultItem]);
       setShowPlan(true);
-
-      // Mostrar resultados inmediatamente con la visualización del plan
-      const generatedResults: ResultItem[] = [
-        { 
-          type: 'plan', 
-          title: 'Plan Generado por Gemini', 
-          content: `Plan detallado generado usando Gemini 2.5 Flash con función agéntica.`,
-          plan: agenticPlan
-        }
-      ];
-
-      setResults(generatedResults);
+      setIsLoading(false);
       setShowResults(true);
-
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error al generar el plan:', error);
+      setIsLoading(false);
       toast({
         variant: 'destructive',
-        title: 'Error al Generar el Plan',
-        description: error.message || 'Ocurrió un error desconocido al generar el plan. Por favor, inténtalo de nuevo.',
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Error desconocido al generar el plan.',
       });
-    } finally {
-      setIsLoading(false);
     }
   };
 
   const handleExecutePlan = async () => {
+    if (!plan || planSteps.length === 0) return;
+    
+    // Verificar que Docker está inicializado antes de ejecutar el plan
+    if (!isDockerInitialized) {
+      toast({
+        variant: 'destructive',
+        title: 'Docker No Inicializado',
+        description: 'Espera a que Docker esté inicializado antes de generar subpasos.',
+      });
+      return;
+    }
+    
+    // Verificar si hay contenedores disponibles
+    let containerAvailable = false;
+    try {
+      const container = await dockerService.getAvailableContainer();
+      containerAvailable = !!(container && container.id);
+    } catch (error) {
+      console.error("No se pudo verificar la disponibilidad de contenedores Docker:", error);
+      containerAvailable = false;
+    }
+    
+    if (!containerAvailable) {
+      toast({
+        variant: 'destructive',
+        title: 'Contenedores Docker No Disponibles',
+        description: 'Se generarán subpasos sin interacción con Docker. Algunas funcionalidades pueden estar limitadas.',
+      });
+    }
+    
+    setIsGeneratingSubSteps(true);
+    setShowSubStepsGenerated(false);
+
+    try {
+      const updateStepWithSubsteps = async (stepIndex: number) => {
+        const paso = planSteps[stepIndex];
+        
+        // Actualizar el estado del paso a "en progreso"
+        setPlanSteps(prev => prev.map((step, index) => 
+          index === stepIndex ? {...step, status: 'in-progress'} : step
+        ));
+        
+        // Preparar el prompt para generar subpasos detallados utilizando técnicas avanzadas
+        let detailPrompt = `# Generación de subpasos para implementación práctica
+        
+        Estoy trabajando en el siguiente paso de un plan:
+        
+        "${paso.description}"
+        
+        ## Contexto general
+        
+        Este paso forma parte del siguiente plan general: "${plan.plan}"
+        
+        ## Objetivo
+        
+        Necesito una secuencia de subpasos extremadamente detallados, específicos y ACCIONABLES que me permitan IMPLEMENTAR este paso de forma práctica y directa.
+        
+        ## Requisitos específicos para los subpasos:
+        1. Deben ser PRÁCTICOS y EJECUTABLES (comandos exactos, acciones concretas)
+        2. Cada subpaso debe representar UNA ACCIÓN ÚNICA y clara
+        3. El nivel de detalle debe ser alto pero evitando explicaciones innecesarias
+        4. Los subpasos deben cubrir desde la preparación hasta la verificación de resultados
+        5. Incluir comandos exactos cuando sea relevante
+        6. Incluir únicamente instrucciones FINALES para EJECUTAR, no razonamientos preliminares
+        
+        ## Formato de respuesta:
+        - Máximo 8-10 subpasos para mantener la claridad
+        - Cada subpaso debe ser un párrafo separado
+        - Usa **negrita** (markdown) para destacar términos clave
+        - Para comandos, usa \`comando\` (entre backticks)
+        - NO enumeres los pasos (no uses "1.", "2.", etc.)
+        - NO uses viñetas ni guiones al inicio
+        - Separa cada subpaso con una línea en blanco
+        
+        ## Consideraciones técnicas:
+        - Asume que el usuario tiene conocimientos técnicos básicos
+        - Da por hecho que las herramientas necesarias están disponibles
+        - Proporciona la ruta completa de archivos cuando sea necesario
+        `;
+        
+        // Añadir contexto sobre los archivos si están disponibles
+        if (uploadedFiles.length > 0) {
+          detailPrompt += `\n\n## Archivos disponibles:\n${uploadedFiles.map(file => `- ${file.name} (${file.type}, ${formatBytes(file.size)})`).join('\n')}`;
+        }
+        
+        // Generar los subpasos utilizando Gemini con capacidades agénticas
+        try {
+          // Ejecutar comandos en el contenedor Docker para obtener información de contexto si es necesario
+          let contextoDocker = '';
+          try {
+            if (isDockerInitialized) {
+              // Obtener un contenedor disponible en lugar de usar "default"
+              const container = await dockerService.getAvailableContainer();
+              if (container && container.id) {
+                const containerInfoResult = await dockerService.executeCommand(container.id, ['ls', '-la']);
+                if (containerInfoResult && typeof containerInfoResult === 'string') {
+                  contextoDocker = `\n\n## Contexto del entorno Docker:\n${containerInfoResult}`;
+                  detailPrompt += contextoDocker;
+                }
+              } else {
+                console.log("No se pudo obtener un contenedor Docker disponible");
+              }
+            }
+          } catch (error) {
+            console.error('Error al obtener contexto de Docker:', error);
+            // Continuar sin el contexto de Docker
+            contextoDocker = '\n\n## Nota: No se pudo acceder al entorno Docker para obtener contexto adicional.';
+            detailPrompt += contextoDocker;
+          }
+          
+          // Llamar a la API de Gemini para generar los subpasos
+          console.log(`Generando subpasos para: "${paso.description}"`);
+          const result = await geminiService.getTextResponse(detailPrompt);
+          
+          // Procesar la respuesta para extraer subpasos y preservar formato Markdown
+          const rawText = result.trim();
+          
+          // Separamos por líneas en blanco para obtener subpasos claros
+          const subStepBlocks = rawText.split(/\n\s*\n/)
+            .filter(block => block.trim().length > 0)
+            .map(block => block.trim());
+          
+          // Limitar a un máximo de 8 subpasos para mantener simplicidad
+          const limitedSubSteps = subStepBlocks.slice(0, Math.min(subStepBlocks.length, 8));
+          
+          const subSteps: SubStep[] = limitedSubSteps.map((text, index) => {
+            // Limpiar numeración y formatos como "1. " o "- " al inicio de la línea
+            let cleanText = text.replace(/^(\d+\.|[-*•+])\s+/g, '');
+            
+            // Eliminar asteriscos y comillas redundantes al principio/final si existen
+            if (cleanText.startsWith('"') && cleanText.endsWith('"')) {
+              cleanText = cleanText.substring(1, cleanText.length - 1);
+            }
+            
+            // Limitar longitud de cada subpaso para mejor visualización
+            const maxLength = 250;
+            if (cleanText.length > maxLength) {
+              cleanText = cleanText.substring(0, maxLength) + '...';
+            }
+            
+            return {
+              id: (stepIndex + 1) * 100 + index,
+              description: cleanText, // Mantener formato markdown en la descripción
+              status: 'pending',
+              parentId: paso.id
+            };
+          });
+          
+          // Actualizar el paso con los subpasos generados y cambiar su estado a completado
+          setPlanSteps(prev => prev.map((step, index) => 
+            index === stepIndex ? {...step, subSteps, status: 'completed'} : step
+          ));
+          
+          return subSteps;
+        } catch (error) {
+          console.error(`Error al generar subpasos para el paso ${stepIndex + 1}:`, error);
+          
+          // Actualizar el paso con un estado de error
+          setPlanSteps(prev => prev.map((step, index) => 
+            index === stepIndex ? {...step, status: 'error'} : step
+          ));
+          
+          // Generar un mensaje de error
+          toast({
+            variant: 'destructive',
+            title: 'Error al Generar Subpasos',
+            description: `No fue posible detallar el paso "${paso.description}". Por favor, intenta nuevamente.`,
+          });
+          
+          return [];
+        }
+      };
+      
+      // Generar subpasos para cada paso del plan en paralelo
+      const generationPromises = planSteps.map((_, index) => updateStepWithSubsteps(index));
+      try {
+        await Promise.all(generationPromises);
+        
+        // Verificar que todos los pasos se hayan completado correctamente
+        const allStepsCompleted = planSteps.every(step => step.status === 'completed' && step.subSteps && step.subSteps.length > 0);
+        
+        if (allStepsCompleted) {
+          setIsGeneratingSubSteps(false);
+          setShowSubStepsGenerated(true);
+          
+          toast({
+            title: 'Subpasos Generados',
+            description: 'Se han generado todos los subpasos detallados para el plan.',
+          });
+        } else {
+          // Si algún paso no se completó, intentar regenerar los que fallaron
+          const failedSteps = planSteps.filter(step => step.status !== 'completed' || !step.subSteps || step.subSteps.length === 0);
+          
+          if (failedSteps.length > 0) {
+            toast({
+              variant: 'destructive',
+              title: 'Generación Parcial',
+              description: `Algunos pasos no pudieron generarse completamente. Intenta ejecutar el plan de todas formas.`,
+            });
+          }
+          
+          setIsGeneratingSubSteps(false);
+          setShowSubStepsGenerated(true);
+        }
+      } catch (error) {
+        console.error('Error al procesar los subpasos:', error);
+        setIsGeneratingSubSteps(false);
+        
+        // Aún así permitimos ejecutar el plan con los subpasos que se generaron correctamente
+        const hasAnySubSteps = planSteps.some(step => step.subSteps && step.subSteps.length > 0);
+        if (hasAnySubSteps) {
+          setShowSubStepsGenerated(true);
+        }
+        
+        toast({
+          variant: 'destructive',
+          title: 'Error en la Generación',
+          description: 'Ocurrió un error al generar algunos subpasos detallados. Puedes ejecutar el plan con los subpasos que se generaron correctamente.',
+        });
+      }
+    } catch (error) {
+      console.error('Error al generar los subpasos:', error);
+      setIsGeneratingSubSteps(false);
+      
+      toast({
+        variant: 'destructive',
+        title: 'Error en la Generación',
+        description: 'Ocurrió un error al generar los subpasos detallados.',
+      });
+    }
+  };
+
+  // Nueva función para ejecutar el plan con los subpasos
+  const handleRunPlan = async () => {
     if (!plan || planSteps.length === 0) return;
     
     // Verificar que Docker está inicializado antes de ejecutar el plan
@@ -405,27 +591,53 @@ ${contenido}`;
     setShowResults(false);
     setResults([]);
 
-    // Simular ejecución
+    // Ejecutar los pasos y subpasos
     for (let i = 0; i < planSteps.length; i++) {
+      const paso = planSteps[i];
       setPlanSteps(prev => prev.map((step, index) => index === i ? {...step, status: 'in-progress'} : step));
-      await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1500)); // Simular trabajo
-
-      // Simular posibles errores
-      if (Math.random() < 0.1 && i > 0) { // 10% de probabilidad de error después del primer paso
-        setPlanSteps(prev => prev.map((step, index) => index === i ? {...step, status: 'error'} : step));
-        toast({
-          variant: 'destructive',
-          title: 'Error de Ejecución',
-          description: `Ocurrió un error durante el paso: ${planSteps[i].description}`,
-        });
-        setIsExecuting(false);
-        return; // Detener ejecución en caso de error
+      
+      // Si el paso tiene subpasos, ejecutarlos uno por uno
+      if (paso.subSteps && paso.subSteps.length > 0) {
+        for (let j = 0; j < paso.subSteps.length; j++) {
+          // Actualizar el estado del subpaso a "en progreso"
+          setPlanSteps(prev => {
+            const updatedSteps = [...prev];
+            const currentStep = {...updatedSteps[i]};
+            if (currentStep.subSteps) {
+              currentStep.subSteps = currentStep.subSteps.map((subStep, subIndex) => 
+                subIndex === j ? {...subStep, status: 'in-progress'} : subStep
+              );
+            }
+            updatedSteps[i] = currentStep;
+            return updatedSteps;
+          });
+          
+          // Simular el trabajo (en una implementación real, aquí se ejecutaría cada subpaso)
+          await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1000));
+          
+          // Actualizar el estado del subpaso a "completado"
+          setPlanSteps(prev => {
+            const updatedSteps = [...prev];
+            const currentStep = {...updatedSteps[i]};
+            if (currentStep.subSteps) {
+              currentStep.subSteps = currentStep.subSteps.map((subStep, subIndex) => 
+                subIndex === j ? {...subStep, status: 'completed'} : subStep
+              );
+            }
+            updatedSteps[i] = currentStep;
+            return updatedSteps;
+          });
+        }
+      } else {
+        // Si no tiene subpasos, simular trabajo para el paso principal
+        await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1500));
       }
-
+      
+      // Marcar el paso como completado
       setPlanSteps(prev => prev.map((step, index) => index === i ? {...step, status: 'completed'} : step));
     }
 
-    // Simular la generación de resultados basados en el plan
+    // Generar resultados como lo hacía la función original
     const generatedResults: ResultItem[] = [];
     
     // Determinar si es un plan de tipo PlanVisualizationOutput (formato anterior)
@@ -537,8 +749,148 @@ ${contenido}`;
     return !!plan && 'visualizationFormats' in plan && 'requiresExternalInfo' in plan;
   };
 
-  const isAgenticPlan = (plan: PlanVisualizationOutput | AgenticPlanningOutput | null): plan is AgenticPlanningOutput => {
-    return !!plan && 'pasos' in plan && 'requiereInfoExterna' in plan;
+  // Función para renderizar texto con formato Markdown básico
+  const renderMarkdownText = (text: string): React.ReactNode => {
+    if (!text) return null;
+    
+    // Procesar negrita: **texto** -> <strong>texto</strong>
+    const boldProcessed = text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        const content = part.slice(2, -2);
+        return <strong key={index}>{content}</strong>;
+      }
+      return part;
+    });
+    
+    // Procesar código inline: `código` -> <code>código</code>
+    const result = boldProcessed.map((part, index) => {
+      if (typeof part === 'string') {
+        return part.split(/(`[^`]+`)/g).map((codePart, codeIndex) => {
+          if (codePart.startsWith('`') && codePart.endsWith('`')) {
+            const content = codePart.slice(1, -1);
+            return <code key={`${index}-${codeIndex}`} className="px-1 py-0.5 bg-muted rounded text-xs font-mono">{content}</code>;
+          }
+          return codePart;
+        });
+      }
+      return part;
+    });
+    
+    return result;
+  };
+
+  const renderPlanSteps = () => {
+    return (
+      <div className="space-y-3 mt-4">
+        {planSteps.map((step, index) => (
+          <div 
+            key={step.id} 
+            className={`rounded-md p-3 border transition-all ${
+              step.status === 'completed' 
+                ? 'bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-900' 
+                : step.status === 'in-progress'
+                ? 'bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-900'
+                : step.status === 'error'
+                ? 'bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-900'
+                : 'bg-muted/50 border-muted-foreground/20'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium flex items-center gap-2 flex-shrink overflow-hidden">
+                <span className={`flex-shrink-0 flex items-center justify-center h-6 w-6 rounded-full ${
+                  step.status === 'completed' 
+                    ? 'bg-green-500 text-white' 
+                    : step.status === 'in-progress'
+                    ? 'bg-blue-500 text-white'
+                    : step.status === 'error'
+                    ? 'bg-red-500 text-white'
+                    : 'bg-muted-foreground/20 text-muted-foreground'
+                } text-xs font-medium`}>{step.id}</span>
+                <span className="truncate">{step.description}</span>
+              </h3>
+              
+              {/* Indicador de estado y botón para colapsar/expandir */}
+              <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                {step.status === 'in-progress' && (
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                )}
+                {step.status === 'completed' && (
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                )}
+                {step.status === 'error' && (
+                  <XCircle className="h-4 w-4 text-red-500" />
+                )}
+                
+                {/* Botón para colapsar/expandir subpasos */}
+                {step.subSteps && step.subSteps.length > 0 && (
+                  <Button
+                    variant="ghost" 
+                    size="icon"
+                    className="h-6 w-6 p-0 hover:bg-muted/60"
+                    onClick={() => {
+                      setPlanSteps(prev => prev.map((s, i) => 
+                        i === index ? {...s, isCollapsed: !s.isCollapsed} : s
+                      ));
+                    }}
+                  >
+                    {step.isCollapsed ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                    )}
+                  </Button>
+                )}
+              </div>
+            </div>
+            
+            {/* Contenedor de subpasos, visible solo cuando no está colapsado */}
+            {step.subSteps && step.subSteps.length > 0 && !step.isCollapsed && (
+              <div className="mt-3 pl-8 space-y-3 max-w-full overflow-hidden">
+                {step.subSteps.map((subStep) => (
+                  <div 
+                    key={subStep.id} 
+                    className={`rounded-md p-2 border transition-all w-full max-w-full overflow-hidden ${
+                      subStep.status === 'completed' 
+                        ? 'bg-green-50 border-green-100 dark:bg-green-950/20 dark:border-green-900/50' 
+                        : subStep.status === 'in-progress'
+                        ? 'bg-blue-50 border-blue-100 dark:bg-blue-950/20 dark:border-blue-900/50'
+                        : subStep.status === 'error'
+                        ? 'bg-red-50 border-red-100 dark:bg-red-950/20 dark:border-red-900/50'
+                        : 'bg-muted/30 border-muted-foreground/10'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2 w-full max-w-full">
+                      <div className={`flex-shrink-0 mt-0.5 flex items-center justify-center h-4 w-4 rounded-full ${
+                        subStep.status === 'completed' 
+                          ? 'bg-green-500 text-white' 
+                          : subStep.status === 'in-progress'
+                          ? 'bg-blue-500 text-white'
+                          : subStep.status === 'error'
+                          ? 'bg-red-500 text-white'
+                          : 'bg-muted-foreground/20 text-muted-foreground'
+                      } text-[10px] font-medium`}>
+                        {subStep.status === 'completed' && <CheckCircle className="h-2.5 w-2.5" />}
+                        {subStep.status === 'in-progress' && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                        {(subStep.status === 'pending' || subStep.status === 'error') && 
+                          <span className="text-[8px]">{Math.floor((subStep.id % 100))}</span>
+                        }
+                      </div>
+                      
+                      <div
+                        className="text-sm flex-1 overflow-hidden prose prose-sm max-w-none dark:prose-invert break-words markdown-content"
+                        dangerouslySetInnerHTML={{
+                          __html: marked(subStep.description)
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
   };
 
   // Function to render different result types
@@ -628,26 +980,37 @@ ${contenido}`;
           <Card key={index} className="mb-4 result-card">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Rocket className="h-5 w-5 text-accent" /> {item.title}
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 4h6v6"/><path d="M10 20H4v-6"/><path d="M20 10 4 10"/><path d="M10 4v4.5"/><path d="M14 20v-4.5"/></svg>
+                Plan Generado con Gemini
               </CardTitle>
-              <CardDescription>
-                Generado con Gemini 2.5 Flash en modo agéntico
-              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {/* Mostrar pasos del plan */}
-                <div className="space-y-3">
-                  <h3 className="text-lg font-medium">Pasos del Plan</h3>
-                  {item.plan?.pasos?.map((paso, pasoIndex) => (
-                    <div key={pasoIndex} className="bg-muted/30 rounded-md p-3 border">
-                      <h4 className="font-medium text-sm flex items-start gap-2">
-                        <span className="flex-shrink-0 bg-accent/20 text-accent rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold">{pasoIndex + 1}</span>
-                        <span>{paso.paso}</span>
-                      </h4>
-                      <p className="text-xs text-muted-foreground mt-2 ml-8">{paso.explicacion}</p>
+                <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <h3 className="text-lg font-semibold">Resumen del Plan</h3>
+                  {item.plan && (
+                    <p className="whitespace-pre-wrap">{item.plan.plan}</p>
+                  )}
+                
+                  <h3 className="text-lg font-semibold mt-6">Pasos a Seguir</h3>
+                  
+                  {/* Si hay pasos en el estado del componente, usamos esos */}
+                  {planSteps.length > 0 ? (
+                    renderPlanSteps()
+                  ) : (
+                    /* Si no, mostramos los del plan directamente */
+                    <div className="space-y-3">
+                      {item.plan && isAgenticPlan(item.plan) && item.plan.pasos.map((paso, idx) => (
+                        <div key={idx} className="rounded-md p-3 border bg-muted/50 border-muted-foreground/20">
+                          <h3 className="text-sm font-medium flex items-center gap-2">
+                            <span className="flex items-center justify-center h-6 w-6 rounded-full bg-muted-foreground/20 text-muted-foreground text-xs font-medium">{idx + 1}</span>
+                            {paso.paso}
+                          </h3>
+                          <p className="text-sm text-muted-foreground mt-1 pl-8">{paso.explicacion}</p>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
 
                 {/* Mostrar información de análisis de archivos */}
@@ -699,118 +1062,20 @@ ${contenido}`;
                     variant="secondary" 
                     className="text-xs"
                     onClick={handleExecutePlan}
-                    disabled={isExecuting}
+                    disabled={isExecuting || isGeneratingSubSteps}
                   >
                     <CheckCircle className="h-4 w-4 mr-1" />
-                    Aceptar y Ejecutar Plan
+                    Aceptar Plan
                   </Button>
 
                   <Button 
                     variant="outline" 
                     className="text-xs"
                     onClick={() => setShowPlan(false)}
+                    disabled={isExecuting || isGeneratingSubSteps}
                   >
-                    <XCircle className="h-4 w-4 mr-1" />
-                    Rechazar Plan
-                  </Button>
-                </div>
-                
-                {/* Añadir área para comentarios/feedback sobre el plan - Movido al final */}
-                <div className="mt-4 space-y-2 pt-4 border-t">
-                  <h3 className="text-sm font-medium">¿Quieres mejorar el plan?</h3>
-                  <Textarea 
-                    placeholder="Añade comentarios o sugerencias para mejorar el plan. Por ejemplo: 'Añade un paso para visualizar los resultados en un gráfico' o 'Necesito que el análisis incluya también estadísticas'"
-                    className="min-h-[100px] text-sm"
-                    id="plan-feedback"
-                  />
-                  <Button 
-                    size="sm" 
-                    className="mt-2"
-                    onClick={async () => {
-                      const feedback = (document.getElementById('plan-feedback') as HTMLTextAreaElement)?.value;
-                      if (feedback && item.plan) {
-                        toast({
-                          title: "Recalculando plan",
-                          description: "Procesando tus comentarios para mejorar el plan...",
-                        });
-
-                        try {
-                          // Preparar información detallada de los archivos
-                          const fileInfos = uploadedFiles.map(file => ({
-                            name: file.name,
-                            type: file.type,
-                            size: formatBytes(file.size),
-                          }));
-
-                          // Preparar la entrada para el flujo agéntico con el feedback e información de archivos
-                          const input = {
-                            prompt: `${prompt}\n\n${uploadedFiles.length > 0 
-                              ? `Archivos disponibles:\n${fileInfos.map(f => `- ${f.name} (${f.type}, ${f.size})`).join('\n')}\n\n`
-                              : ''}Comentarios adicionales: ${feedback}`,
-                            fileNames: uploadedFiles.map(f => f.name),
-                            fileContents: uploadedFiles.map(f => {
-                              const [, base64Content] = f.dataUri.split(',');
-                              let contenido = '';
-                              if (base64Content) {
-                                try {
-                                  contenido = decodeURIComponent(escape(atob(base64Content)));
-                                } catch (error) {
-                                  contenido = `[Contenido binario no mostrado: ${f.name}]`;
-                                }
-                              } else {
-                                contenido = `[No se pudo extraer contenido: ${f.name}]`;
-                              }
-
-                              return `[Archivo: ${f.name}]
-Tipo: ${f.type}
-Tamaño: ${formatBytes(f.size)}
----
-${contenido}`;
-                            }),
-                          };
-
-                          // Generar nuevo plan con el feedback incorporado
-                          const nuevoAgenticPlan = await generateAgenticPlan(input);
-                          
-                          // Actualizar el estado con el nuevo plan
-                          const planAdaptado: PlanVisualizationOutput = {
-                            plan: nuevoAgenticPlan.plan,
-                            requiresExternalInfo: nuevoAgenticPlan.requiereInfoExterna,
-                            requiresFileAnalysis: nuevoAgenticPlan.requiereAnalisisArchivos,
-                            visualizationFormats: nuevoAgenticPlan.detallesVisualizacion ? [nuevoAgenticPlan.detallesVisualizacion] : []
-                          };
-                          setPlan(planAdaptado);
-
-                          // Actualizar los resultados con el nuevo plan
-                          setResults(prevResults => prevResults.map(result => {
-                            if (result.type === 'plan') {
-                              return {
-                                ...result,
-                                plan: nuevoAgenticPlan
-                              };
-                            }
-                            return result;
-                          }));
-
-                          // Limpiar el textarea de feedback
-                          (document.getElementById('plan-feedback') as HTMLTextAreaElement).value = '';
-
-                          toast({
-                            title: "Plan actualizado",
-                            description: "El plan ha sido mejorado con tus comentarios.",
-                          });
-                        } catch (error: any) {
-                          console.error('Error al mejorar el plan:', error);
-                          toast({
-                            variant: 'destructive',
-                            title: "Error al mejorar el plan",
-                            description: error.message || "No se pudo procesar tu feedback. Por favor, inténtalo de nuevo.",
-                          });
-                        }
-                      }
-                    }}
-                  >
-                    Mejorar Plan
+                    <RotateCcw className="h-4 w-4 mr-1" />
+                    Volver a Editar
                   </Button>
                 </div>
               </div>
@@ -825,6 +1090,41 @@ ${contenido}`;
 
   return (
     <div className="flex flex-col items-center justify-start min-h-screen p-4 md:p-8 transition-all duration-500 ease-in-out">
+      {/* Estilos para formato markdown en subpasos */}
+      <style jsx global>{`
+        .markdown-content code {
+          background-color: rgba(0, 0, 0, 0.05);
+          padding: 0.2em 0.4em;
+          border-radius: 3px;
+          font-family: monospace;
+          font-size: 0.9em;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
+        .markdown-content strong {
+          font-weight: 600;
+        }
+        .dark .markdown-content code {
+          background-color: rgba(255, 255, 255, 0.1);
+        }
+        .prose p {
+          margin-top: 0.5em;
+          margin-bottom: 0.5em;
+        }
+        .prose code {
+          background-color: rgba(0, 0, 0, 0.05);
+          padding: 0.2em 0.4em;
+          border-radius: 3px;
+          font-family: monospace;
+          font-size: 0.9em;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
+        .dark .prose code {
+          background-color: rgba(255, 255, 255, 0.1);
+        }
+      `}</style>
+      
       <div className="w-full max-w-3xl">
         <DockerStatus />
       </div>
@@ -943,7 +1243,7 @@ ${contenido}`;
           <Button
             size="lg"
             className="text-lg font-semibold rounded-full shadow-md hover:shadow-lg transition-shadow bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white"
-            onClick={handleExecutePlan}
+            onClick={handleRunPlan}
           >
             <Rocket className="mr-2 h-5 w-5" />
             Ejecutar Plan
