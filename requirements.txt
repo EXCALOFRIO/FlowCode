@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+docker
+python-dotenv
+google-genai
+pydantic
+requests
+python-multipart
+pytest
+httpx
+flask
+flask-socketio
+flask-cors
+eventlet
