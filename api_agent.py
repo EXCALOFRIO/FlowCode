@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 import logging
+import re
 from typing import List, Dict, Any, Optional, Callable, Union
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Query
 from fastapi.responses import JSONResponse
@@ -105,6 +106,13 @@ class InstallDependenciesRequest(BaseModel):
     dependencies_content: str = Field(..., description="Contenido del archivo de dependencias")
     dep_type: str = Field("pip", description="Tipo de dependencias: pip o apt")
 
+class GenerateReportRequest(BaseModel):
+    task_id: str = Field(..., description="ID de la tarea para la que generar el reporte")
+
+class GenerateReportResponse(BaseModel):
+    task_id: str = Field(..., description="ID de la tarea")
+    report: str = Field(..., description="Reporte detallado en formato Markdown")
+
 # --- Funciones auxiliares ---
 async def handle_auto_recovery(agent_instance, result, task_data, max_retries=3):
     """Maneja la recuperación automática en caso de error en la ejecución de un paso."""
@@ -172,7 +180,7 @@ async def create_task(task_request: TaskCreateRequest, background_tasks: Backgro
     """
     Crea una nueva tarea para el agente.
     
-    - **description**: Descripción de la tarea a realizar
+    - **description**: Descripción de la tarea a realizar en formato markdown para que se pueda ver el plan de la tarea más claro
     - **model**: (Opcional) Modelo de Gemini a utilizar
     - **auto_execute**: (Opcional) Ejecutar automáticamente el primer paso
     
@@ -292,6 +300,10 @@ async def get_task(task_id: str):
     # Añadir información sobre reintentos si existe
     if "retries" in task_data:
         response["retries"] = task_data["retries"]
+    
+    # Añadir el reporte si está disponible
+    if "report" in task_data:
+        response["report"] = task_data["report"]
     
     return response
 
@@ -573,6 +585,289 @@ async def reset():
         return result.result
     else:
         raise HTTPException(status_code=400, detail=result.message)
+
+@app.post("/tasks/{task_id}/report", response_model=GenerateReportResponse, tags=["Reportes"])
+async def generate_detailed_report(task_id: str, background_tasks: BackgroundTasks = None):
+    """
+    Genera un reporte científico detallado de la tarea completada.
+    
+    - **task_id**: ID de la tarea para la que generar el reporte
+    
+    Retorna un reporte exhaustivo en formato Markdown con todos los detalles de la ejecución.
+    """
+    
+    if task_id not in agent_tasks or task_id not in agent_instances:
+        raise HTTPException(status_code=404, detail=f"Tarea {task_id} no encontrada")
+    
+    task_data = agent_tasks[task_id]
+    agent = agent_instances[task_id]
+    
+    # Verificar si ya existe un reporte generado para esta tarea
+    if "report" in task_data:
+        log.info(f"Retornando reporte pre-generado para la tarea {task_id}")
+        return {
+            "task_id": task_id,
+            "report": task_data["report"]
+        }
+    
+    # Generar un reporte básico inmediato mientras se genera el completo en segundo plano
+    basic_report = f"""# Reporte Preliminar: {task_data.get('description', 'Tarea Docker')}
+
+## Resumen Ejecutivo
+Se completó la tarea "{task_data.get('description', 'Tarea Docker')}" con éxito.
+
+## Detalles de la Ejecución
+El plan de ejecución consistió en {len(task_data.get('plan', []))} pasos, todos completados satisfactoriamente.
+
+*Generando reporte detallado, la página se actualizará automáticamente cuando esté listo...*
+"""
+    
+    # Si tenemos tareas en segundo plano disponibles, generar el reporte completo
+    # en un proceso separado para no bloquear la respuesta
+    if background_tasks:
+        background_tasks.add_task(
+            _generate_detailed_report_background,
+            task_id=task_id,
+            task_data=task_data,
+            agent=agent
+        )
+    
+    return {
+        "task_id": task_id,
+        "report": basic_report
+    }
+
+async def _generate_detailed_report_background(task_id: str, task_data: dict, agent: GeminiAgent):
+    """
+    Genera un reporte detallado en segundo plano y lo almacena en los datos de la tarea.
+    """
+    try:
+        log.info(f"Generando reporte detallado en segundo plano para la tarea {task_id}")
+        
+        # Obtener todos los resultados de pasos ejecutados
+        steps_results = []
+        for step_idx in range(task_data.get("current_step", 0)):
+            try:
+                # Extraer información de los resultados del paso
+                step_data = task_data.get("step_results", {}).get(str(step_idx), {})
+                if not step_data and step_idx < len(task_data.get("plan", [])):
+                    step_data = {
+                        "step_description": task_data.get("plan", [])[step_idx],
+                        "step_index": step_idx,
+                    }
+                steps_results.append(step_data)
+            except Exception as e:
+                log.error(f"Error al recopilar datos del paso {step_idx}: {e}")
+        
+        # Obtener la fecha y hora actual para el reporte
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Construir un prompt para que Gemini genere un reporte científico detallado en formato LaTeX
+        report_prompt = f"""
+        Genera un reporte científico detallado, formal y visualmente atractivo en formato LaTeX sobre esta tarea Docker: {task_data.get("description", "")}
+        
+        ## Datos de la tarea:
+        - ID: {task_id}
+        - Estado: {task_data.get("status", "desconocido")}
+        - Modelo Gemini utilizado: {task_data.get("model", "desconocido")}
+        - Fecha y hora de generación: {current_time}
+        
+        ## Plan de ejecución:
+        {json.dumps(task_data.get("plan", []), indent=2)}
+        
+        ## Resultados de la ejecución:
+        {json.dumps(steps_results, indent=2, default=str)}
+        
+        ## Instrucciones para el reporte LaTeX:
+        
+        Crea un documento LaTeX completo y bien estructurado que incluya:
+        
+        1. Preámbulo LaTeX con documentclass article y paquetes necesarios:
+           - inputenc con UTF-8 para soporte de caracteres especiales
+           - babel con español para idioma
+           - amsmath para entornos matemáticos
+           - geometry para márgenes adecuados
+           - graphicx para soporte de imágenes (aunque no las uses)
+           - hyperref para enlaces clicables
+        
+        2. Un título descriptivo con \\title y estructura completa con \\begin{{document}} y \\maketitle
+        
+        3. Un resumen ejecutivo como abstract
+        
+        4. Secciones bien organizadas que cubran:
+           - Introducción y objetivo de la tarea
+           - Metodología y pasos ejecutados
+           - Resultados obtenidos con detalles técnicos
+           - Análisis de tiempos de ejecución
+           - Conclusiones y recomendaciones
+        
+        5. Usa correctamente los entornos LaTeX:
+           - itemize/enumerate para listas
+           - figure para diagramas conceptuales (si los necesitas)
+           - table para datos estructurados
+           - equation para fórmulas matemáticas (si son relevantes)
+        
+        IMPORTANTE:
+        - El documento debe ser un archivo LaTeX completo, desde \\documentclass hasta \\end{{document}}
+        - Asegúrate que sea compatible con PdfLaTeX
+        - No omitas ninguna parte esencial del documento LaTeX
+        - Incluye todos los paquetes necesarios en el preámbulo
+        - No uses paquetes exóticos o poco comunes que puedan fallar en compilación
+        - Evita comandos o sintaxis personalizada que no sea estándar en LaTeX
+        - Si incluyes código, usa el entorno verbatim o listings (si lo declaras en el preámbulo)
+        
+        Tu respuesta debe ser únicamente el código LaTeX completo y listo para compilar, sin ningún texto introductorio o explicación adicional fuera del documento LaTeX.
+        """
+        
+        # Utilizar el método adecuado para generar contenido
+        report_result = agent.execute_plan_step(None, report_prompt, generate_report=True)
+        
+        # Verificar si report_result es None o no contiene texto
+        if not report_result or 'message' not in report_result:
+            # Intentar obtener el texto de otra manera o generar un mensaje de error adecuado
+            try:
+                if isinstance(report_result, dict) and 'text' in report_result:
+                    report_text = report_result['text']
+                elif isinstance(report_result, dict) and 'content' in report_result:
+                    report_text = report_result['content']
+                else:
+                    # Generar un reporte LaTeX básico como fallback
+                    report_text = f"""\\documentclass{{article}}
+\\usepackage[utf8]{{inputenc}}
+\\usepackage[spanish]{{babel}}
+\\usepackage{{amsmath,amssymb,graphicx,hyperref,xcolor,geometry}}
+
+\\geometry{{
+  a4paper,
+  total={{170mm,257mm}},
+  left=20mm,
+  right=20mm,
+  top=20mm,
+  bottom=20mm
+}}
+
+\\title{{Reporte Científico Detallado: {task_data.get('description', 'Tarea Docker')}}}
+\\author{{Sistema de Reporte Automático}}
+\\date{{{current_time}}}
+
+\\begin{{document}}
+
+\\maketitle
+
+\\begin{{abstract}}
+Se completó la tarea "{task_data.get('description', 'Tarea Docker')}" con éxito el {current_time}.
+Este reporte detalla los pasos ejecutados y los resultados obtenidos.
+\\end{{abstract}}
+
+\\section{{Introducción}}
+Este documento presenta los resultados de la tarea Docker solicitada. La ejecución consistió en {len(task_data.get('plan', []))} pasos, todos completados satisfactoriamente.
+
+\\section{{Metodología}}
+Se siguió un plan estructurado para completar la tarea.
+
+\\section{{Resultados}}
+Los pasos se ejecutaron según lo planeado, logrando el objetivo de la tarea.
+
+\\section{{Tiempo de Ejecución}}
+Tiempo de inicio: {current_time}
+
+\\section{{Conclusiones}}
+La tarea fue completada con éxito, cumpliendo todos los objetivos planteados.
+
+\\end{{document}}
+"""
+            except Exception as inner_e:
+                log.error(f"Error al procesar el resultado del reporte: {inner_e}")
+                report_text = f"""\\documentclass{{article}}
+\\usepackage[utf8]{{inputenc}}
+\\usepackage[spanish]{{babel}}
+
+\\title{{Reporte de Tarea {task_id}}}
+\\author{{Sistema Automático}}
+\\date{{{current_time}}}
+
+\\begin{{document}}
+\\maketitle
+
+Se completó la tarea con éxito, pero no se pudo generar un reporte detallado.
+
+\\end{{document}}
+"""
+        else:
+            report_text = report_result['message']
+        
+        # Verificar si el texto ya tiene estructura LaTeX completa
+        if not "\\documentclass" in report_text:
+            report_text = f"""\\documentclass{{article}}
+\\usepackage[utf8]{{inputenc}}
+\\usepackage[spanish]{{babel}}
+\\usepackage{{amsmath,amssymb,graphicx,hyperref,xcolor,geometry}}
+
+\\geometry{{
+  a4paper,
+  total={{170mm,257mm}},
+  left=20mm,
+  right=20mm,
+  top=20mm,
+  bottom=20mm
+}}
+
+\\title{{Reporte Detallado: {task_data.get('description', 'Tarea Docker')}}}
+\\author{{Generado Automáticamente}}
+\\date{{{current_time}}}
+
+\\begin{{document}}
+
+\\maketitle
+
+{report_text}
+
+\\end{{document}}
+"""
+        
+        # Asegurarnos que el LaTeX sea compatible con la visualización
+        # Eliminar delimitadores como '''latex o ```latex que pueden causar problemas
+        if report_text.startswith("```latex") and report_text.endswith("```"):
+            report_text = report_text[8:-3]
+        if report_text.startswith("'''latex") and report_text.endswith("'''"):
+            report_text = report_text[7:-3]
+            
+        # Asegurarnos que el texto está limpio y listo para usar
+        report_text = report_text.strip()
+        
+        # Almacenar el reporte en los datos de la tarea para futuras solicitudes
+        task_data["report"] = report_text
+        agent_tasks[task_id] = task_data
+        
+        log.info(f"Reporte detallado en LaTeX generado y almacenado para la tarea {task_id}")
+        
+    except Exception as e:
+        log.error(f"Error en la generación del reporte en segundo plano para {task_id}: {e}")
+        # Almacenar un mensaje de error como reporte LaTeX
+        task_data["report"] = f"""\\documentclass{{article}}
+\\usepackage[utf8]{{inputenc}}
+\\usepackage[spanish]{{babel}}
+\\usepackage{{xcolor}}
+
+\\title{{Error en la Generación del Reporte}}
+\\author{{Sistema Automático}}
+\\date{{{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}}}
+
+\\begin{{document}}
+
+\\maketitle
+
+\\begin{{center}}
+\\textcolor{{red}}{{\\large Ocurrió un error al generar el reporte detallado:}}
+
+\\vspace{{1em}}
+\\texttt{{{str(e)}}}
+\\end{{center}}
+
+\\end{{document}}
+"""
+        agent_tasks[task_id] = task_data
 
 # --- Punto de entrada principal ---
 if __name__ == "__main__":

@@ -1026,25 +1026,61 @@ class GeminiAgent:
         
         return self.current_task
     
-    def execute_plan_step(self, step_index: int = None, user_feedback: str = None) -> Dict[str, Any]:
+    def execute_plan_step(self, step_index: int = None, user_feedback: str = None, generate_report: bool = False) -> Dict[str, Any]:
         """Ejecuta un paso específico del plan o el siguiente paso pendiente.
         
         Args:
             step_index: Índice del paso a ejecutar (opcional)
             user_feedback: Retroalimentación del usuario sobre el paso anterior (opcional)
+            generate_report: Si es True, genera un reporte en lugar de ejecutar un paso del plan (opcional)
         
         Returns:
-            Dict: Resultado de la ejecución del paso
+            Dict: Resultado de la ejecución del paso o reporte generado
         """
-        if not self.current_task:
+        if not self.current_task and not generate_report:
             return {
                 "status": "error",
                 "message": "No hay una tarea activa. Crea una tarea primero."
             }
         
-        # Si se proporciona retroalimentación del usuario, añadirla al historial
+        # Si se proporciona retroalimentación del usuario (que podría ser el prompt para generar reporte), añadirla al historial
         if user_feedback:
             self._add_to_history("user", user_feedback)
+            
+        # Caso especial: generación de reporte
+        if generate_report:
+            try:
+                # Generar un reporte utilizando la retroalimentación como prompt
+                system_prompt = """
+                Eres un analista técnico especializado en generar reportes detallados.
+                Genera un reporte científico detallado y exhaustivo basado en la información proporcionada.
+                El reporte debe tener formato Markdown y cubrir todos los aspectos solicitados.
+                """
+                
+                # Generar la respuesta sin llamadas a funciones para reportes
+                response = client.models.generate_content(
+                    model=self.model_name,
+                    contents=user_feedback,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.1,
+                    )
+                )
+                
+                # Extraer el texto del reporte
+                report_text = response.text if hasattr(response, 'text') else str(response)
+                
+                # Devolver el informe como mensaje
+                return {
+                    "status": "success",
+                    "message": report_text,
+                }
+            except Exception as e:
+                log.error(f"Error al generar reporte: {e}")
+                return {
+                    "status": "error",
+                    "message": f"Error al generar reporte: {str(e)}",
+                }
         
         # Determinar el paso a ejecutar
         if step_index is not None:

@@ -41,3 +41,8 @@ yarn-error.log*
 next-env.d.ts
 
 .genkit/*
+
+/.pytest_cache
+/frontend/node_modules
+/frontend/.next
+
