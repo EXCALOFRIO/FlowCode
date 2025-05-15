@@ -12,3 +12,7 @@ flask
 flask-socketio
 flask-cors
 eventlet
+bidict
+typing-extensions
+pillow
+python-socketio

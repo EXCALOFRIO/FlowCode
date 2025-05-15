@@ -5,6 +5,10 @@ import subprocess
 import threading
 import time
 import signal
+import argparse
+import logging
+from dotenv import load_dotenv
+import uvicorn
 
 # Colores para consola
 class Colors:
@@ -18,6 +22,13 @@ class Colors:
 
 # Lista de procesos para terminar al salir
 processes = []
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+log = logging.getLogger(__name__)
+
+# Cargar variables de entorno
+load_dotenv()
 
 def print_banner():
     """Imprime un banner con información del proyecto."""
@@ -69,34 +80,35 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 def main():
-    print_banner()
+    """Función principal para ejecutar el backend API del agente."""
+    parser = argparse.ArgumentParser(description="Ejecutar el backend API del agente")
     
-    # Registrar el manejador de señales
-    signal.signal(signal.SIGINT, signal_handler)
+    # Argumentos
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host para el servidor")
+    parser.add_argument("--port", type=int, default=int(os.getenv("API_PORT", 8001)), help="Puerto para el servidor")
+    parser.add_argument("--reload", action="store_true", help="Activar modo de recarga automática")
     
-    # Iniciar threads para los servicios backend
-    docker_thread = threading.Thread(target=run_docker_manager, daemon=True)
-    api_thread = threading.Thread(target=run_api_agent, daemon=True)
+    args = parser.parse_args()
     
-    docker_thread.start()
-    time.sleep(2)  # Esperar a que Docker Manager esté listo
-    api_thread.start()
+    # Verificar API key
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        log.warning("⚠️ No se ha configurado la API key de Google Gemini.")
+        log.warning("Configure la variable de entorno GOOGLE_API_KEY o añádala en un archivo .env")
+    else:
+        log.info("✓ Google API Key configurada correctamente")
     
-    print(f"\n{Colors.GREEN}Servicios backend listos para usar:{Colors.ENDC}")
-    print(f"{Colors.GREEN}- Docker Manager: http://localhost:9000{Colors.ENDC}")
-    print(f"{Colors.GREEN}- API Agent: http://localhost:8001{Colors.ENDC}")
-    print(f"\n{Colors.YELLOW}Puedes usar la interfaz de línea de comandos:{Colors.ENDC}")
-    print(f"{Colors.YELLOW}python cli_agent.py --interactive{Colors.ENDC}")
-    print(f"\n{Colors.YELLOW}O acceder a la documentación de la API REST:{Colors.ENDC}")
-    print(f"{Colors.YELLOW}http://localhost:8001/docs{Colors.ENDC}")
-    print(f"\n{Colors.YELLOW}Presiona Ctrl+C para detener los servicios.{Colors.ENDC}\n")
+    # Mostrar modelo configurado
+    model = os.getenv("DEFAULT_MODEL", "gemini-2.5-flash-preview-04-17")
+    log.info(f"Usando modelo: {model}")
     
-    try:
-        # Mantener el proceso principal vivo
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        signal_handler(None, None)
+    # Verificar URL del Docker Manager
+    docker_manager_url = os.getenv("DOCKER_MANAGER_URL", "http://127.0.0.1:9001")
+    log.info(f"Docker Manager URL: {docker_manager_url}")
+    
+    # Ejecutar la API
+    log.info(f"Iniciando servidor API en {args.host}:{args.port}")
+    uvicorn.run("api_agent:app", host=args.host, port=args.port, reload=args.reload)
 
 if __name__ == "__main__":
     main() 

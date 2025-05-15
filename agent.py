@@ -200,11 +200,473 @@ def install_package_in_docker(package_name: str) -> FunctionResult:
         )
 
 
-def web_search(search_query: str) -> FunctionResult:
-    """Realiza una búsqueda web simulada para obtener información.
+def search_files_in_docker(pattern: str, base_path: str = None) -> FunctionResult:
+    """Busca archivos por patrón en el contenedor.
     
     Args:
-        search_query: El término de búsqueda
+        pattern: Patrón de búsqueda (ej: *.py, *.js)
+        base_path: Directorio base desde donde iniciar la búsqueda (opcional)
+    """
+    try:
+        params = {"pattern": pattern}
+        if base_path:
+            params["base_path"] = base_path
+            
+        response = requests.get(f"{DOCKER_MANAGER_URL}/search_files", params=params)
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Búsqueda de archivos completada: {pattern}"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error en búsqueda de archivos: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en search_files_in_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de búsqueda: {str(e)}"
+        )
+
+
+def search_in_files_docker(query: str, base_path: str = None) -> FunctionResult:
+    """Busca texto dentro de archivos en el contenedor.
+    
+    Args:
+        query: Texto a buscar en los archivos
+        base_path: Directorio base desde donde iniciar la búsqueda (opcional)
+    """
+    try:
+        params = {"query": query}
+        if base_path:
+            params["base_path"] = base_path
+            
+        response = requests.get(f"{DOCKER_MANAGER_URL}/search_in_files", params=params)
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Búsqueda de texto completada: {query}"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error en búsqueda de texto: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en search_in_files_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de búsqueda de texto: {str(e)}"
+        )
+
+
+def edit_file_lines_in_docker(container_path: str, start_line: int, end_line: int, new_content: str) -> FunctionResult:
+    """Edita líneas específicas de un archivo en el contenedor.
+    
+    Args:
+        container_path: Ruta del archivo en el contenedor
+        start_line: Línea inicial a reemplazar (1-based, inclusive)
+        end_line: Línea final a reemplazar (1-based, inclusive)
+        new_content: Nuevo contenido a insertar (puede ser multilínea)
+    """
+    try:
+        data = {
+            "container_path": container_path,
+            "start_line": start_line,
+            "end_line": end_line,
+            "new_content": new_content
+        }
+        
+        response = requests.post(
+            f"{DOCKER_MANAGER_URL}/edit_file_lines",
+            data=data
+        )
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Archivo editado exitosamente: {container_path} (líneas {start_line}-{end_line})"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al editar archivo: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en edit_file_lines_in_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de edición: {str(e)}"
+        )
+
+
+def edit_file_content_in_docker(container_path: str, content: str, mode: str = "replace") -> FunctionResult:
+    """Edita el contenido completo de un archivo en el contenedor.
+    
+    Args:
+        container_path: Ruta del archivo en el contenedor
+        content: Nuevo contenido del archivo
+        mode: Modo de edición ("replace" reemplaza todo, "smart" detecta y preserva indentación)
+    """
+    try:
+        data = {
+            "container_path": container_path,
+            "content": content,
+            "mode": mode
+        }
+        
+        response = requests.put(
+            f"{DOCKER_MANAGER_URL}/edit_file_content",
+            json=data
+        )
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Archivo editado exitosamente: {container_path} (modo: {mode})"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al editar archivo: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en edit_file_content_in_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de edición: {str(e)}"
+        )
+
+
+def edit_file_block_in_docker(container_path: str, search_block: str, replacement_block: str) -> FunctionResult:
+    """Edición avanzada de archivos para reemplazar bloques de código.
+    
+    Args:
+        container_path: Ruta del archivo en el contenedor
+        search_block: Bloque de texto a buscar
+        replacement_block: Bloque de texto de reemplazo
+    """
+    try:
+        data = {
+            "container_path": container_path,
+            "search_block": search_block,
+            "replacement_block": replacement_block,
+            "preserve_indentation": True
+        }
+        
+        response = requests.put(
+            f"{DOCKER_MANAGER_URL}/edit_file_content_advanced",
+            json=data
+        )
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Bloque editado exitosamente en: {container_path}"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al editar bloque: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en edit_file_block_in_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de edición de bloque: {str(e)}"
+        )
+
+
+def chmod_path_in_docker(container_path: str, mode: str) -> FunctionResult:
+    """Cambia los permisos de un archivo o directorio en el contenedor.
+    
+    Args:
+        container_path: Ruta del archivo o directorio
+        mode: Modo de permisos (ej: 755, u+x)
+    """
+    try:
+        data = {
+            "container_path": container_path,
+            "mode": mode
+        }
+        
+        response = requests.post(
+            f"{DOCKER_MANAGER_URL}/chmod_path",
+            data=data
+        )
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Permisos cambiados exitosamente: {container_path} (modo: {mode})"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al cambiar permisos: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en chmod_path_in_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de cambio de permisos: {str(e)}"
+        )
+
+
+def list_files_in_docker(path: str = None) -> FunctionResult:
+    """Lista archivos y directorios en una ruta del contenedor.
+    
+    Args:
+        path: Ruta en el contenedor para listar archivos (opcional)
+    """
+    try:
+        params = {}
+        if path:
+            params["path"] = path
+            
+        response = requests.get(f"{DOCKER_MANAGER_URL}/list_files", params=params)
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Archivos listados exitosamente en: {path or 'workspace'}"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al listar archivos: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en list_files_in_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de listado: {str(e)}"
+        )
+
+
+def read_file_from_docker(container_path: str) -> FunctionResult:
+    """Lee el contenido de un archivo del contenedor.
+    
+    Args:
+        container_path: Ruta del archivo en el contenedor
+    """
+    try:
+        params = {"container_path": container_path}
+        response = requests.get(f"{DOCKER_MANAGER_URL}/read_file", params=params)
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.text,
+                message=f"Archivo leído exitosamente: {container_path}"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al leer archivo: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en read_file_from_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de lectura: {str(e)}"
+        )
+
+
+def delete_path_in_docker(container_path: str) -> FunctionResult:
+    """Elimina un archivo o directorio en el contenedor.
+    
+    Args:
+        container_path: Ruta del archivo o directorio a eliminar
+    """
+    try:
+        params = {"container_path": container_path}
+        response = requests.delete(f"{DOCKER_MANAGER_URL}/delete_path", params=params)
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Ruta eliminada exitosamente: {container_path}"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al eliminar ruta: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en delete_path_in_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de eliminación: {str(e)}"
+        )
+
+
+def install_dependencies_in_docker(dependencies_content: str, dep_type: str = "pip") -> FunctionResult:
+    """Instala dependencias desde un archivo (requirements.txt o lista de paquetes).
+    
+    Args:
+        dependencies_content: Contenido del archivo de dependencias
+        dep_type: Tipo de dependencias ('pip' para requirements.txt, 'apt' para paquetes)
+    """
+    try:
+        # Crear archivo temporal
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, mode='w+') as tmp_file:
+            tmp_file.write(dependencies_content)
+            temp_path = tmp_file.name
+        
+        # Subir el archivo
+        with open(temp_path, 'rb') as f:
+            files = {'dep_file': ('requirements.txt' if dep_type == 'pip' else 'packages.txt', f)}
+            data = {'dep_type': dep_type}
+            response = requests.post(
+                f"{DOCKER_MANAGER_URL}/install_dependencies",
+                files=files,
+                data=data
+            )
+        
+        # Eliminar archivo temporal
+        os.unlink(temp_path)
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message=f"Dependencias instaladas exitosamente (tipo: {dep_type})"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al instalar dependencias: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en install_dependencies_in_docker: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de instalación: {str(e)}"
+        )
+
+
+def get_container_stats() -> FunctionResult:
+    """Obtiene estadísticas de uso de recursos del contenedor."""
+    try:
+        response = requests.get(f"{DOCKER_MANAGER_URL}/container_stats")
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message="Estadísticas del contenedor obtenidas exitosamente"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al obtener estadísticas: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en get_container_stats: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de estadísticas: {str(e)}"
+        )
+
+
+def get_container_logs(tail: int = 100) -> FunctionResult:
+    """Obtiene los logs recientes del contenedor.
+    
+    Args:
+        tail: Número de líneas de log a obtener
+    """
+    try:
+        params = {"tail": tail}
+        response = requests.get(f"{DOCKER_MANAGER_URL}/container_logs", params=params)
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.text,
+                message=f"Logs del contenedor obtenidos exitosamente (últimas {tail} líneas)"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al obtener logs: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en get_container_logs: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de logs: {str(e)}"
+        )
+
+
+def reset_container() -> FunctionResult:
+    """Reinicia el contenedor Docker."""
+    try:
+        response = requests.post(f"{DOCKER_MANAGER_URL}/reset")
+        
+        if response.status_code == 200:
+            return FunctionResult(
+                status=ActionStatus.SUCCESS,
+                result=response.json(),
+                message="Contenedor reiniciado exitosamente"
+            )
+        else:
+            return FunctionResult(
+                status=ActionStatus.FAILURE,
+                result=None,
+                message=f"Error al reiniciar contenedor: {response.status_code} - {response.text}"
+            )
+    except Exception as e:
+        log.error(f"Error en reset_container: {e}")
+        return FunctionResult(
+            status=ActionStatus.FAILURE,
+            result=None,
+            message=f"Error en la solicitud de reinicio: {str(e)}"
+        )
+
+
+def web_search(search_query: str) -> FunctionResult:
+    """Realiza una búsqueda en la web.
+    
+    Args:
+        search_query: Consulta de búsqueda
     """
     # En una implementación real, se conectaría a una API de búsqueda
     # Como es una simulación, devolvemos un resultado estático
@@ -339,7 +801,7 @@ def analyze_content(content: str, context: str) -> FunctionResult:
 # --- Clase Agent ---
 
 class GeminiAgent:
-    def __init__(self, model_name="gemini-2.0-flash-001"):
+    def __init__(self, model_name="gemini-2.5-flash-preview-04-17"):
         """Inicializa un agente basado en Gemini.
         
         Args:
@@ -358,6 +820,7 @@ class GeminiAgent:
         ]
         self.current_task = None
         self.conversation_history = []
+        self.max_retry_attempts = 3
     
     def _add_to_history(self, role, content):
         """Añade un mensaje al historial de conversación."""
@@ -622,6 +1085,12 @@ class GeminiAgent:
         2. Siempre usa rutas absolutas comenzando con / para evitar confusiones
         3. El directorio de trabajo recomendado es /workspace
         
+        RESOLUCIÓN DE ERRORES:
+        1. Si encuentras un error, analiza la causa raíz y propón una solución adecuada
+        2. Puedes intentar enfoques alternativos si un método falla
+        3. Usa comandos de diagnóstico como 'ls', 'cat', 'pwd' para obtener información sobre el entorno
+        4. Si un paquete no está disponible, intenta instalarlo primero
+        
         Para interactuar con el contenedor Docker existente, usa las siguientes funciones:
         
         1. run_command_in_docker(command: str) - Ejecuta un comando directamente en el contenedor existente
@@ -655,87 +1124,160 @@ class GeminiAgent:
             del resultado y validando que se han cumplido los requisitos de la tarea.
             """
         
+        # Añadir contexto de pasos previos para mejor continuidad
+        previous_steps_context = ""
+        if self.current_task.current_step > 0:
+            previous_steps_context = "\nPASOS COMPLETADOS ANTERIORMENTE:\n"
+            for i in range(min(3, self.current_task.current_step)):
+                prev_idx = self.current_task.current_step - i - 1
+                prev_step = self.current_task.plan[prev_idx]
+                if isinstance(prev_step, dict):
+                    prev_step_info = f"{prev_idx+1}. {prev_step.get('titulo', '')}: {prev_step.get('descripcion', '')}"
+                else:
+                    prev_step_info = f"{prev_idx+1}. {prev_step}"
+                previous_steps_context += f"{prev_step_info}\n"
+        
         # Construir el mensaje del usuario con el contexto de la tarea y el paso actual
+        step_title = current_step_description.get('titulo', '') if isinstance(current_step_description, dict) else ''
+        step_desc = current_step_description.get('descripcion', current_step_description) if isinstance(current_step_description, dict) else current_step_description
+        
         task_context = f"""
         TAREA: {self.current_task.description}
         
-        PLAN:
-        {chr(10).join([f"{i+1}. {step}" for i, step in enumerate(self.current_task.plan)])}
-        
+        PLAN COMPLETO:
+        {chr(10).join([f"{i+1}. {step.get('titulo', step) if isinstance(step, dict) else step}" for i, step in enumerate(self.current_task.plan)])}
+        {previous_steps_context}
         PASO ACTUAL ({self.current_task.current_step + 1}/{len(self.current_task.plan)}):
-        {current_step_description}
+        {step_title}
+        {step_desc}
         
         Por favor, realiza este paso utilizando las funciones disponibles.
+        Si encuentras algún error, intenta diagnosticar y resolver el problema automáticamente.
         """
         
-        try:
-            # Generar la respuesta utilizando function calling
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=task_context,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=0.2,
-                    tools=self.tools,
+        retry_count = 0
+        while retry_count < self.max_retry_attempts:
+            try:
+                # Generar la respuesta utilizando function calling
+                response = client.models.generate_content(
+                    model=self.model_name,
+                    contents=task_context,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.2,
+                        tools=self.tools,
+                    )
                 )
-            )
-            
-            # Si hay una llamada a función, ejecutarla
-            if response.function_calls:
-                function_call = response.function_calls[0]
-                function_name = function_call.name
-                function_args = function_call.args
                 
-                # Encontrar la función en las herramientas
-                for tool in self.tools:
-                    if tool.__name__ == function_name:
-                        # Ejecutar la función con los argumentos
-                        result = tool(**function_args)
-                        
-                        # Registrar el resultado en el historial
-                        self._add_to_history(
-                            "function", 
-                            {
-                                "name": function_name,
-                                "args": function_args,
-                                "result": result.dict() if hasattr(result, "dict") else str(result)
-                            }
-                        )
-                        
-                        # Actualizar el estado de la tarea
-                        self.current_task.current_step += 1
-                        
+                # Si hay una llamada a función, ejecutarla
+                if response.function_calls:
+                    function_call = response.function_calls[0]
+                    function_name = function_call.name
+                    function_args = function_call.args
+                    
+                    # Encontrar la función en las herramientas
+                    function_found = False
+                    for tool in self.tools:
+                        if tool.__name__ == function_name:
+                            function_found = True
+                            try:
+                                # Ejecutar la función con los argumentos
+                                result = tool(**function_args)
+                                
+                                # Registrar el resultado en el historial
+                                self._add_to_history(
+                                    "function", 
+                                    {
+                                        "name": function_name,
+                                        "args": function_args,
+                                        "result": result.dict() if hasattr(result, "dict") else str(result)
+                                    }
+                                )
+                                
+                                # Si la operación falló, intentar diagnosticar y resolver
+                                if hasattr(result, 'status') and result.status == ActionStatus.FAILURE:
+                                    # Añadir contexto de error para el siguiente intento
+                                    error_context = f"""
+                                    Hubo un error al ejecutar la función {function_name} con los argumentos {function_args}:
+                                    Error: {result.message}
+                                    
+                                    Por favor, diagnostica el problema y propón una solución alternativa.
+                                    """
+                                    task_context += "\n" + error_context
+                                    retry_count += 1
+                                    log.warning(f"Error en la ejecución de la función, reintentando ({retry_count}/{self.max_retry_attempts})")
+                                    continue
+                                
+                                # Actualizar el estado de la tarea si fue exitoso
+                                self.current_task.current_step += 1
+                                
+                                return {
+                                    "status": "success",
+                                    "step_index": self.current_task.current_step - 1,
+                                    "step_description": current_step_description,
+                                    "function_called": function_name,
+                                    "function_args": function_args,
+                                    "result": result.dict() if hasattr(result, "dict") else str(result),
+                                    "next_step": self.current_task.plan[self.current_task.current_step] if self.current_task.current_step < len(self.current_task.plan) else None,
+                                    "task_status": "in_progress" if self.current_task.current_step < len(self.current_task.plan) else "completed"
+                                }
+                            except Exception as e:
+                                log.error(f"Error al ejecutar la función {function_name}: {e}")
+                                # Añadir contexto de error para el siguiente intento
+                                error_context = f"""
+                                Hubo una excepción al ejecutar la función {function_name} con los argumentos {function_args}:
+                                Error: {str(e)}
+                                
+                                Por favor, diagnostica el problema y propón una solución alternativa.
+                                """
+                                task_context += "\n" + error_context
+                                retry_count += 1
+                                log.warning(f"Error en la ejecución de la función, reintentando ({retry_count}/{self.max_retry_attempts})")
+                                continue
+                    
+                    if not function_found:
+                        error_message = f"Función {function_name} no encontrada entre las herramientas disponibles"
+                        log.error(error_message)
                         return {
-                            "status": "success",
-                            "step_index": self.current_task.current_step - 1,
+                            "status": "error",
+                            "step_index": self.current_task.current_step,
                             "step_description": current_step_description,
-                            "function_called": function_name,
-                            "function_args": function_args,
-                            "result": result.dict() if hasattr(result, "dict") else str(result),
-                            "next_step": self.current_task.plan[self.current_task.current_step] if self.current_task.current_step < len(self.current_task.plan) else None,
-                            "task_status": "in_progress" if self.current_task.current_step < len(self.current_task.plan) else "completed"
+                            "message": error_message,
+                            "task_status": "error"
                         }
-            
-            # Si no hay llamada a función, devolver el texto de respuesta
-            self._add_to_history("assistant", response.text)
-            
-            return {
-                "status": "waiting_for_input",
-                "step_index": self.current_task.current_step,
-                "step_description": current_step_description,
-                "message": response.text,
-                "task_status": "waiting_for_input"
-            }
-            
-        except Exception as e:
-            log.error(f"Error al ejecutar paso del plan: {e}")
-            return {
-                "status": "error",
-                "step_index": self.current_task.current_step,
-                "step_description": current_step_description,
-                "message": f"Error al ejecutar paso: {str(e)}",
-                "task_status": "error"
-            }
+                
+                # Si no hay llamada a función, devolver el texto de respuesta
+                self._add_to_history("assistant", response.text)
+                
+                return {
+                    "status": "waiting_for_input",
+                    "step_index": self.current_task.current_step,
+                    "step_description": current_step_description,
+                    "message": response.text,
+                    "task_status": "waiting_for_input"
+                }
+                
+            except Exception as e:
+                log.error(f"Error al ejecutar paso del plan: {e}")
+                retry_count += 1
+                if retry_count >= self.max_retry_attempts:
+                    return {
+                        "status": "error",
+                        "step_index": self.current_task.current_step,
+                        "step_description": current_step_description,
+                        "message": f"Error al ejecutar paso después de {self.max_retry_attempts} intentos: {str(e)}",
+                        "task_status": "error"
+                    }
+                log.warning(f"Reintentando ejecución del paso ({retry_count}/{self.max_retry_attempts})")
+                
+        # Si llegamos aquí, es porque agotamos los intentos
+        return {
+            "status": "error",
+            "step_index": self.current_task.current_step,
+            "step_description": current_step_description,
+            "message": f"Se agotaron los intentos de ejecución ({self.max_retry_attempts})",
+            "task_status": "error"
+        }
 
 
 # --- Ejemplo de uso ---
