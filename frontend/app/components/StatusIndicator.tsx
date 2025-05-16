@@ -7,6 +7,7 @@ import { StatusResponse } from '../types';
 export default function StatusIndicator() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
   const [debugInfo, setDebugInfo] = useState<string | null>(null);
@@ -19,6 +20,7 @@ export default function StatusIndicator() {
       try {
         // No establecer loading en true cada vez para evitar parpadeo
         // setLoading(true);
+        console.log('Iniciando solicitud de estado del contenedor...');
         const containerStatus = await getContainerStatus();
         
         // Guardar detalles de depuración
@@ -28,6 +30,7 @@ export default function StatusIndicator() {
         
         setStatus(containerStatus);
         setError(null);
+        setErrorDetails(null);
         // Reiniciar contador de reintentos cuando hay éxito
         setRetryCount(0);
         
@@ -37,7 +40,23 @@ export default function StatusIndicator() {
         }
       } catch (err) {
         console.error('Error al obtener estado:', err);
-        setError('Error al conectar con el servidor');
+        
+        // Extraer mensaje de error más detallado
+        let errorMsg = 'Error al conectar con el servidor';
+        let errorDetail = '';
+        
+        if (err instanceof Error) {
+          if (err.message.includes('timeout')) {
+            errorMsg = 'Tiempo de espera agotado';
+            errorDetail = 'El servidor está tardando demasiado en responder. Esto puede deberse a una alta carga o problemas de red.';
+          } else {
+            errorMsg = err.message;
+            errorDetail = err.stack || '';
+          }
+        }
+        
+        setError(errorMsg);
+        setErrorDetails(errorDetail);
         
         // Incrementar contador de reintentos
         setRetryCount((prev) => prev + 1);
@@ -61,8 +80,8 @@ export default function StatusIndicator() {
       
       console.log(`Reintentando conexión en ${retryDelay/1000} segundos...`);
     } else {
-      // Actualizar cada 10 segundos (aumentado de 5 a 10 para reducir parpadeo)
-      intervalId = setInterval(fetchStatus, 10000);
+      // Actualizar cada 15 segundos (aumentado para reducir carga)
+      intervalId = setInterval(fetchStatus, 15000);
     }
 
     // Limpiar al desmontar
@@ -71,6 +90,14 @@ export default function StatusIndicator() {
       if (retryTimeoutId) clearTimeout(retryTimeoutId);
     };
   }, [error, retryCount, loading]);
+
+  // Función para reintentar manualmente
+  const handleManualRetry = () => {
+    setLoading(true);
+    setRetryCount(0);
+    setError(null);
+    setErrorDetails(null);
+  };
 
   // Determinar clase de color basada en el estado
   const getStatusClass = () => {
@@ -88,7 +115,7 @@ export default function StatusIndicator() {
   // Determinar texto de estado
   const getStatusText = () => {
     if (loading) return 'Conectando...';
-    if (error) return retryCount > 1 ? `Error de conexión (reintento ${retryCount})` : 'Error de conexión';
+    if (error) return error + (retryCount > 1 ? ` (reintento ${retryCount})` : '');
     if (!status) return 'Desconectado';
     
     // Más verificaciones para determinar si el contenedor está activo
@@ -104,10 +131,26 @@ export default function StatusIndicator() {
       <div className="flex items-center gap-2">
         <span className={`inline-block w-3 h-3 rounded-full ${getStatusClass()}`} />
         <span className="text-sm">{getStatusText()}</span>
+        
+        {error && (
+          <button 
+            onClick={handleManualRetry}
+            className="ml-2 text-xs bg-blue-500 hover:bg-blue-600 text-white px-2 py-0.5 rounded"
+          >
+            Reintentar
+          </button>
+        )}
       </div>
       
+      {/* Información de error */}
+      {error && errorDetails && (
+        <div className="mt-1 text-xs text-red-600">
+          {errorDetails}
+        </div>
+      )}
+      
       {/* Información de depuración cuando hay errores o problemas */}
-      {process.env.NODE_ENV !== 'production' && error && (
+      {(process.env.NODE_ENV !== 'production' && (error || debugInfo)) && (
         <details className="mt-1 text-xs text-muted-foreground">
           <summary>Detalles (debug)</summary>
           <pre className="mt-1 p-1 bg-muted/20 rounded-sm overflow-x-auto max-w-[300px]">

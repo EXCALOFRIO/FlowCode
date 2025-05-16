@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 
 interface SwiftLaTeXViewerProps {
   latexContent: string;
+  onPdfReady?: (pdfUrl: string) => void;
 }
 
 // Declaración de la API para PdfTeXEngine
@@ -13,7 +14,7 @@ declare global {
   }
 }
 
-const SwiftLaTeXViewer = ({ latexContent }: SwiftLaTeXViewerProps) => {
+const SwiftLaTeXViewer = ({ latexContent, onPdfReady }: SwiftLaTeXViewerProps) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -21,6 +22,53 @@ const SwiftLaTeXViewer = ({ latexContent }: SwiftLaTeXViewerProps) => {
   const engineRef = useRef<any>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const engineInitialized = useRef<boolean>(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isHidden, setIsHidden] = useState(false);
+  
+  // Detectar si el componente está en un contenedor oculto
+  useEffect(() => {
+    if (typeof window !== 'undefined' && containerRef.current) {
+      const checkVisibility = () => {
+        const isElementHidden = (element: HTMLElement): boolean => {
+          if (!element) return false;
+          
+          // Verificar si el elemento o alguno de sus padres está oculto
+          const style = window.getComputedStyle(element);
+          if (style.display === 'none' || style.visibility === 'hidden') return true;
+          
+          // Verificar si tiene la clase 'hidden' o algún padre la tiene
+          if (element.classList.contains('hidden')) return true;
+          
+          // Verificar padres
+          let parent = element.parentElement;
+          while (parent) {
+            const parentStyle = window.getComputedStyle(parent);
+            if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden' || 
+                parent.classList.contains('hidden')) {
+              return true;
+            }
+            parent = parent.parentElement;
+          }
+          
+          return false;
+        };
+        
+        setIsHidden(isElementHidden(containerRef.current as HTMLElement));
+      };
+      
+      checkVisibility();
+      
+      // Verificar cada vez que cambie el DOM
+      const observer = new MutationObserver(checkVisibility);
+      observer.observe(document.body, { 
+        attributes: true, 
+        childList: true, 
+        subtree: true 
+      });
+      
+      return () => observer.disconnect();
+    }
+  }, []);
   
   // Silenciar errores específicos de SwiftLaTeX
   useEffect(() => {
@@ -209,6 +257,11 @@ const SwiftLaTeXViewer = ({ latexContent }: SwiftLaTeXViewerProps) => {
         const pdfblob = new Blob([result.pdf], {type: 'application/pdf'});
         const objectURL = URL.createObjectURL(pdfblob);
         setPdfUrl(objectURL);
+        
+        // Notificar que el PDF está listo
+        if (onPdfReady) {
+          onPdfReady(objectURL);
+        }
       } else {
         // Extraer mensaje de error del log
         const logLines = result.log.split('\n');
@@ -260,8 +313,13 @@ const SwiftLaTeXViewer = ({ latexContent }: SwiftLaTeXViewerProps) => {
     }
   }, [pdfUrl]);
 
+  // Si el componente está oculto, solo renderizar lo mínimo necesario para la compilación
+  if (isHidden) {
+    return <div ref={containerRef} className="latex-viewer-container hidden" />;
+  }
+
   return (
-    <div className="latex-viewer-container">
+    <div className="latex-viewer-container" ref={containerRef}>
       {isLoading ? (
         <div className="flex justify-center items-center py-16">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>

@@ -22,7 +22,7 @@ const dockerClient = axios.create({
     'Content-Type': 'application/json',
   },
   // Añadir timeout para evitar esperas infinitas
-  timeout: 10000,
+  timeout: 300000,
 });
 
 // Funciones para interactuar con la API
@@ -86,7 +86,21 @@ export async function getContainerStatus(): Promise<StatusResponse> {
     
     // Crear una respuesta de error con todos los detalles
     let errorMessage = 'Error desconocido';
-    if (error instanceof Error) {
+    
+    if (axios.isAxiosError(error)) {
+      if (error.code === 'ECONNABORTED') {
+        errorMessage = `Timeout de ${dockerClient.defaults.timeout}ms excedido. El servidor podría estar sobrecargado.`;
+      } else if (error.response) {
+        // El servidor respondió con un código de estado fuera del rango 2xx
+        errorMessage = `Error ${error.response.status}: ${error.response.statusText}`;
+      } else if (error.request) {
+        // La solicitud fue hecha pero no se recibió respuesta
+        errorMessage = 'No se recibió respuesta del servidor';
+      } else {
+        // Error al configurar la solicitud
+        errorMessage = error.message;
+      }
+    } else if (error instanceof Error) {
       errorMessage = error.message;
     }
     
